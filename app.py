@@ -101,29 +101,23 @@ def askPDFPost():
     )
 
     print('Setting up the LLM and chain')
-    document_chain = create_stuff_documents_chain(cached_llm, prompt)
-    chain = create_retrieval_chain(retriever,document_chain)
-    result = chain.invoke({"input":query})
-    print(f"Retrieved documentsXXX: {result['context']}")
-    print(result)
-    # qa_chain = RetrievalQA.from_chain_type(
-    #     llm=cached_llm,
-    #     chain_type="stuff",
-    #     retriever=retriever,
-    #     chain_type_kwargs={
-    #         "prompt": raw_prompt + query
-    #     },
-    #     return_source_documents=True  # This ensures that source documents are returned
-    # )
+    qa_chain = RetrievalQA.from_chain_type(
+        llm=cached_llm,
+        chain_type="stuff",
+        retriever=retriever,
+        chain_type_kwargs={
+            "prompt": raw_prompt + query
+        },
+        return_source_documents=True  # This ensures that source documents are returned
+    )
 
-    # print('Running the chain')
-    # result = qa_chain({"query": query})
-    # print(f"Result: {result}")
+    print('Running the chain')
+    result = qa_chain({"query": query})
+    print(f"Result: {result}")
 
     # Extract the answer and sources
-    #answer = result["result"]
-    #source_documents = result["source_documents"]
-    source_documents = result["context"]
+    answer = result["result"]
+    source_documents = result["source_documents"]
 
     # Prepare sources for the response
     sources = []
@@ -133,7 +127,7 @@ def askPDFPost():
             "page_context": doc.page_content
         })
 
-    response_answer = {"answer": result["answer"], "sources": sources}
+    response_answer = {"answer": answer, "sources": sources}
     return jsonify(response_answer)
 
 
