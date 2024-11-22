@@ -11,6 +11,33 @@ from langchain.prompts import PromptTemplate
 from langchain.text_splitter import CharacterTextSplitter
 import os
 from flask import request, jsonify
+from langchain_core.prompts import ChatPromptTemplate
+
+from langchain.docstore.document import Document
+from PIL import Image
+import pytesseract
+from transformers import LlamaTokenizer, LlamaConfig
+
+pytesseract.pytesseract.tesseract_cmd = "/home/s188903/tesseract/bin/tesseract"
+
+
+from pdf2image import convert_from_path
+import os
+os.environ['PATH'] = os.path.expanduser("~/poppler/bin") + ":" + os.environ['PATH']
+os.environ['LD_LIBRARY_PATH'] = os.path.expanduser("~/poppler/lib") + ":" + os.environ.get('LD_LIBRARY_PATH', '')
+from transformers import LlamaTokenizer, LlamaConfig
+
+
+def process_pdf_with_ocr(file_path):
+    # Konwertuj strony PDF na obrazy
+    pages = convert_from_path(file_path)
+    docs = []
+    for i, page in enumerate(pages):
+        # Przetwarzaj każdą stronę OCR
+        text = pytesseract.image_to_string(page, lang='eng')
+        docs.append(Document(page_content=text, metadata={"source": file_path, "page": i + 1}))
+    return docs
+
 
 app = Flask(__name__)
 
@@ -23,12 +50,23 @@ embedding = FastEmbedEmbeddings()
 text_splitter = CharacterTextSplitter(
     chunk_size=1024, chunk_overlap=80, length_function=len, is_separator_regex=False)
 
-raw_prompt = PromptTemplate.from_template("""
-    <s>[INST] Please help me answer the following question. If you do not have answer from provided information say so. Try to be precise and don't start with redundant introductory lines, get streight to the point. [/INST] </s>               
-    [INST] {input} 
-            Context: {context}
-            Answer:                                                                       
-                                [/INST]          """)
+
+raw_prompt_template = (
+"Please answer the following question based on the provided context. Be precise and go straight to the point. If you don't have an answer from the provided information, please say so."
+"{context}"
+)
+
+raw_prompt = PromptTemplate(
+    template=raw_prompt_template,
+    input_variables=["question", "context"]
+)
+prompt = ChatPromptTemplate.from_messages(
+        [
+        ("system", raw_prompt_template),
+        ("human", "{input}"),
+    ]
+)
+
 
 @app.route("/ai", methods=["POST"])
 def aiPost():
@@ -42,6 +80,8 @@ def aiPost():
     response_answer = {"answer": response}
     return response_answer
 
+from langchain.chains import RetrievalQA
+
 @app.route("/ask_pdf", methods=["POST"])
 def askPDFPost():
     print("Post /ask_pdf called")
@@ -52,34 +92,50 @@ def askPDFPost():
     print('Loading vector store')
     vector_store = Chroma(persist_directory=folder_path, embedding_function=embedding)
 
-    print('Creatinig chain')
-    retreiver = vector_store.as_retriever(
-        search_type = 'similarity_score_threshold',
-        search_kwargs = {
-            'k':5,
-            'score_threshold':0.5
+    print('Creating retriever')
+    retriever = vector_store.as_retriever(
+        search_type='similarity',
+        search_kwargs={
+            'k': 1,
         }
     )
 
-    document_chain = create_stuff_documents_chain(cached_llm, raw_prompt)
-    chain = create_retrieval_chain(retreiver,document_chain)
-
+    print('Setting up the LLM and chain')
+    document_chain = create_stuff_documents_chain(cached_llm, prompt)
+    chain = create_retrieval_chain(retriever,document_chain)
     result = chain.invoke({"input":query})
     print(f"Retrieved documentsXXX: {result['context']}")
     print(result)
+    # qa_chain = RetrievalQA.from_chain_type(
+    #     llm=cached_llm,
+    #     chain_type="stuff",
+    #     retriever=retriever,
+    #     chain_type_kwargs={
+    #         "prompt": raw_prompt + query
+    #     },
+    #     return_source_documents=True  # This ensures that source documents are returned
+    # )
 
+    # print('Running the chain')
+    # result = qa_chain({"query": query})
+    # print(f"Result: {result}")
+
+    # Extract the answer and sources
+    #answer = result["result"]
+    #source_documents = result["source_documents"]
+    source_documents = result["context"]
+
+    # Prepare sources for the response
     sources = []
-    for doc in result["context"]:
-        sources.append(
-            {"source": doc.metadata["source"], "page_context": doc.page_content}
-        )
-    
-    docs = vector_store.similarity_search("dummy query", k=10)
-    print(f"Number of documents in the vector store: {len(docs)}")
-
+    for doc in source_documents:
+        sources.append({
+            "source": doc.metadata.get("source", ""),
+            "page_context": doc.page_content
+        })
 
     response_answer = {"answer": result["answer"], "sources": sources}
-    return response_answer
+    return jsonify(response_answer)
+
 
 
 from langchain.docstore.document import Document  # Import klasy Document
@@ -92,10 +148,10 @@ def pdfPost():
     file.save(save_file)
     print(f"filename: {file_name}")
 
-    # Inicjalizacja bazy danych
+    # Initialize the database
     vector_store = Chroma(persist_directory=folder_path, embedding_function=embedding)
 
-    # Sprawdzenie, czy dokument o tym source już istnieje
+    # Check if the document already exists in the database
     existing_docs = vector_store.get(where={'source': save_file})['ids']
     if existing_docs:
         return {
@@ -103,21 +159,34 @@ def pdfPost():
             "message": f"Document '{file_name}' already exists in the database."
         }, 409  # HTTP 409 Conflict
 
-    # Jeśli dokument nie istnieje, przetwórz i dodaj do bazy
-    loader = PDFPlumberLoader(save_file)
-    docs = loader.load_and_split()
+    # Try extracting text directly
+    try:
+        print("Attempting to load and split document without OCR...")
+        loader = PDFPlumberLoader(save_file)
+        docs = loader.load_and_split()
+        combined_text = "".join(doc.page_content for doc in docs)
+
+        if not combined_text.strip():
+            raise ValueError("No text found in document. Falling back to OCR.")
+
+    except Exception as e:
+        print(f"Direct text extraction failed: {e}")
+        print("Falling back to OCR...")
+        docs = process_pdf_with_ocr(save_file)
+
     print(f"docs len={len(docs)}")
 
+    # Split documents into smaller chunks
     chunks = text_splitter.split_documents(docs)
     print(f"chunks len={len(chunks)}")
 
-    # Tworzenie obiektów Document z metadanymi dla każdego chunku
-    documents_with_metadata = [Document(page_content=chunk.page_content, metadata={"source": save_file}) for chunk in chunks]
-    
-    # Dodanie dokumentów do bazy
+    # Add documents with metadata to the database
+    documents_with_metadata = [
+        Document(page_content=chunk.page_content, metadata={"source": save_file}) for chunk in chunks
+    ]
     vector_store.add_documents(documents_with_metadata)
 
-    vector_store.persist()  # Zapisz zmiany
+    vector_store.persist()  # Save changes
 
     response = {
         "status": "Successfully Uploaded",
@@ -129,10 +198,12 @@ def pdfPost():
 
 
 
+
 @app.route("/pdf_sources", methods=["GET"])
 def get_pdf_sources():
     print("Getting PDF sources")
-    
+    context_window_size = config.max_position_embeddings
+    print(f"Context window size: {context_window_size} tokens")
     # Ładowanie bazy danych Chroma
     vector_store = Chroma(persist_directory=folder_path, embedding_function=embedding)
     
