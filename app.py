@@ -65,6 +65,12 @@ def parse_arguments():
         help="Directory for the vector store."
     )
 
+    parser.add_argument(
+    "--cache_dir",
+    type=str,
+    default=os.path.expanduser('~/fastembed_cache'),
+    help="Directory for FastEmbed cache (default: ~/fastembed_cache)"
+    ) 
     return parser.parse_args()
 
 # Parse command-line arguments
@@ -82,7 +88,7 @@ PORT = args.port
 tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
 reader = easyocr.Reader(['en', 'pl'])
 cached_llm = Ollama(model=MODEL_NAME)
-embedding = FastEmbedEmbeddings()
+embedding = FastEmbedEmbeddings(cache_dir=args.cache_dir)
 
 # Prompt Templates
 RAW_PROMPT_TEMPLATE = (
