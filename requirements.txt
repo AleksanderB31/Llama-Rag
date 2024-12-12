@@ -1,5 +1,5 @@
 flask
-langchain_community
+langchain_community = 0.2.6
 transformers
 pdf2image
 PyMuPDF
@@ -8,3 +8,5 @@ numpy
 Pillow
 gast
 tensorflow
+fastembed = 0.3.2
+chromadb
