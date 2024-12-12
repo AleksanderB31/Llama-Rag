@@ -1,0 +1,10 @@
+flask
+langchain_community
+transformers
+pdf2image
+PyMuPDF
+easyocr
+numpy
+Pillow
+gast
+tensorflow
